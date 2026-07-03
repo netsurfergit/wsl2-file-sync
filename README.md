@@ -1,6 +1,6 @@
 # Sync-GitChanges.ps1
 
-A PowerShell script that syncs git-tracked file changes from a Windows repository into a WSL2 distro in real time. Designed for developers who edit code in a Windows IDE but run and test inside WSL2.
+A PowerShell script that syncs git-tracked file changes from a Windows repository into a WSL2 distro in real time. Designed for developers who edit code in a Windows IDE but run and test inside WSL2 as writing large amounts of files between WSL2 & Windows directories is notoriously slow.
 
 ## How it works
 
