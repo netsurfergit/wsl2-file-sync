@@ -40,6 +40,7 @@ $ErrorActionPreference = "Stop"
 # --- Resolve paths -------------------------------------------------------
 
 $RepoPath = (Resolve-Path $RepoPath).Path.TrimEnd('\')
+$RepoName = Split-Path $RepoPath -Leaf
 $WslDestRoot = "\\wsl$\$WslDistro$WslRepoPath"
 
 if (-not (Test-Path -LiteralPath $WslDestRoot)) {
@@ -195,7 +196,7 @@ $lastFileList   = @(@($initial.Changed) + @($initial.Deleted) | Sort-Object)
 $pollCount    = 0
 $pollsPer3Sec = [math]::Max(1, [math]::Round(3000 / $PollMs))
 
-Write-Host "  Watching for changes every ${PollMs}ms (Ctrl+C to stop)..." -ForegroundColor DarkCyan
+Write-Host "  Watching '$RepoName' for changes every ${PollMs}ms (Ctrl+C to stop)..." -ForegroundColor DarkCyan
 Write-Host "  --------------------------------------------------------" -ForegroundColor DarkGray
 Write-Host ""
 			
@@ -256,7 +257,7 @@ try {
         if ($pollCount -ge $pollsPer3Sec) {
             $pollCount = 0
             Clear-Host
-			Write-Host "  Watching for changes every ${PollMs}ms (Ctrl+C to stop)..." -ForegroundColor DarkCyan
+			Write-Host "  Watching '$RepoName' for changes every ${PollMs}ms (Ctrl+C to stop)..." -ForegroundColor DarkCyan
 			Write-Host "  --------------------------------------------------------" -ForegroundColor DarkGray
 			Write-Host "  Tracking $($lastFileList.Count) file(s) vs '$BaseBranch'" -ForegroundColor DarkGray
 			Write-Host ""
