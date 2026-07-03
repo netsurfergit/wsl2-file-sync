@@ -56,32 +56,23 @@ function Get-GitChangedFiles {
 
     Push-Location $RepoPath
     try {
-        $gitArgs = @('-c', 'core.quotepath=false', '-c', 'core.safecrlf=false')
+        $committed = (git -c core.quotepath=false -c core.safecrlf=false diff --name-only --diff-filter=ACMRT "$Base...HEAD" 2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
+        $staged    = (git -c core.quotepath=false -c core.safecrlf=false diff --name-only --diff-filter=ACMRT --cached       2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
+        $unstaged  = (git -c core.quotepath=false -c core.safecrlf=false diff --name-only --diff-filter=ACMRT               2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
+        $untracked = (git -c core.quotepath=false -c core.safecrlf=false ls-files --others --exclude-standard               2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
 
-        $committed = (git @gitArgs diff --name-only --diff-filter=ACMRT "$Base...HEAD" 2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
-        $staged    = (git @gitArgs diff --name-only --diff-filter=ACMRT --cached       2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
-        $unstaged  = (git @gitArgs diff --name-only --diff-filter=ACMRT               2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
-        $untracked = (git @gitArgs ls-files --others --exclude-standard               2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
+        $deletedCommitted = (git -c core.quotepath=false -c core.safecrlf=false diff --name-only --diff-filter=D "$Base...HEAD" 2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
+        $deletedWorking   = (git -c core.quotepath=false -c core.safecrlf=false diff --name-only --diff-filter=D               2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
 
-        $deletedCommitted = (git @gitArgs diff --name-only --diff-filter=D "$Base...HEAD" 2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
-        $deletedWorking   = (git @gitArgs diff --name-only --diff-filter=D               2>&1) | Where-Object { $_ -is [string] -and $_ -notmatch '^warning:' }
+        $changed = @($committed) + @($staged) + @($unstaged) + @($untracked) |
+            Where-Object { $_ } |
+            ForEach-Object { $_.Trim('"') } |
+            Select-Object -Unique
 
-        $clean = {
-            param($lines)
-            $lines | Where-Object { $_ } | ForEach-Object { $_.Trim('"') }
-        }
-
-        $changed = @(
-            (& $clean $committed),
-            (& $clean $staged),
-            (& $clean $unstaged),
-            (& $clean $untracked)
-        ) | ForEach-Object { $_ } | Where-Object { $_ } | Select-Object -Unique
-
-        $deleted = @(
-            (& $clean $deletedCommitted),
-            (& $clean $deletedWorking)
-        ) | ForEach-Object { $_ } | Where-Object { $_ } | Select-Object -Unique
+        $deleted = @($deletedCommitted) + @($deletedWorking) |
+            Where-Object { $_ } |
+            ForEach-Object { $_.Trim('"') } |
+            Select-Object -Unique
 
         return @{
             Changed = [string[]]@($changed)
@@ -205,62 +196,72 @@ try {
         Start-Sleep -Milliseconds $PollMs
         $pollCount++
 
-        $result            = Get-GitChangedFiles -Base $BaseBranch
-        $currentFileList   = @(@($result.Changed) + @($result.Deleted) | Sort-Object)
-        $currentTimestamps = Get-TimestampSnapshot -Files @($result.Changed)
+        try {
+            $result            = Get-GitChangedFiles -Base $BaseBranch
+            $currentFileList   = @(@($result.Changed) + @($result.Deleted) | Sort-Object)
+            $currentTimestamps = Get-TimestampSnapshot -Files @($result.Changed)
 
-        $fileListChanged = (Compare-Object -ReferenceObject $lastFileList -DifferenceObject $currentFileList) -ne $null
-
-        $contentChanged = $false
-        foreach ($f in @($result.Changed)) {
-            if (-not $f) { continue }
-            if ($currentTimestamps[$f] -ne $lastTimestamps[$f]) {
-                $contentChanged = $true
-                break
+            $fileListChanged = if ($lastFileList.Count -eq 0 -and $currentFileList.Count -eq 0) {
+                $false
+            } elseif ($lastFileList.Count -eq 0 -or $currentFileList.Count -eq 0) {
+                $true
+            } else {
+                (Compare-Object -ReferenceObject $lastFileList -DifferenceObject $currentFileList) -ne $null
             }
-        }
 
-        if ($fileListChanged -or $contentChanged) {
-            $prevFileList   = $lastFileList
-            $prevTimestamps = $lastTimestamps
-
-            $lastFileList   = $currentFileList
-            $lastTimestamps = $currentTimestamps
-
-            $count = 0
-            $syncedFiles  = @()
-            $deletedFiles = @()
-
+            $contentChanged = $false
             foreach ($f in @($result.Changed)) {
-                $isNew      = $prevFileList -notcontains $f
-                $isModified = $currentTimestamps[$f] -ne $prevTimestamps[$f]
-                if ($isNew -or $isModified) { $syncedFiles += $f }
-                Sync-OneFile -RelativePath $f
-                $count++
-            }
-            foreach ($f in @($result.Deleted)) {
-                Remove-OneFile -RelativePath $f
-                $deletedFiles += $f
+                if (-not $f) { continue }
+                if ($currentTimestamps[$f] -ne $lastTimestamps[$f]) {
+                    $contentChanged = $true
+                    break
+                }
             }
 
-            $stamp = Get-Date -Format "HH:mm:ss"
-            Write-Host "  [$stamp] change detected" -ForegroundColor Cyan
-            foreach ($f in $syncedFiles)  { Write-Host "    + $f" -ForegroundColor Green }
-            foreach ($f in $deletedFiles) { Write-Host "    - $f" -ForegroundColor Red }
-            Write-Host "  $count file(s) synced, $($deletedFiles.Count) removed" -ForegroundColor DarkCyan
-            Write-Host ""
+            if ($fileListChanged -or $contentChanged) {
+                $prevFileList   = $lastFileList
+                $prevTimestamps = $lastTimestamps
 
-            # Reset counter so the clear doesn't immediately wipe a fresh change
-            $pollCount = 0
+                $lastFileList   = $currentFileList
+                $lastTimestamps = $currentTimestamps
+
+                $count = 0
+                $syncedFiles  = @()
+                $deletedFiles = @()
+
+                foreach ($f in @($result.Changed)) {
+                    $isNew      = $prevFileList -notcontains $f
+                    $isModified = $currentTimestamps[$f] -ne $prevTimestamps[$f]
+                    if ($isNew -or $isModified) { $syncedFiles += $f }
+                    Sync-OneFile -RelativePath $f
+                    $count++
+                }
+                foreach ($f in @($result.Deleted)) {
+                    Remove-OneFile -RelativePath $f
+                    $deletedFiles += $f
+                }
+
+                $stamp = Get-Date -Format "HH:mm:ss"
+                Write-Host "  [$stamp] change detected" -ForegroundColor Cyan
+                foreach ($f in $syncedFiles)  { Write-Host "    + $f" -ForegroundColor Green }
+                foreach ($f in $deletedFiles) { Write-Host "    - $f" -ForegroundColor Red }
+                Write-Host "  $count file(s) synced, $($deletedFiles.Count) removed" -ForegroundColor DarkCyan
+                Write-Host ""
+
+                $pollCount = 0
+            }
+
+            if ($pollCount -ge $pollsPer3Sec) {
+                $pollCount = 0
+                Clear-Host
+                Write-Host "  Watching '$RepoName' for changes every ${PollMs}ms (Ctrl+C to stop)..." -ForegroundColor DarkCyan
+                Write-Host "  --------------------------------------------------------" -ForegroundColor DarkGray
+                Write-Host "  Tracking $($lastFileList.Count) file(s) vs '$BaseBranch'" -ForegroundColor DarkGray
+                Write-Host ""
+            }
         }
-
-        if ($pollCount -ge $pollsPer3Sec) {
-            $pollCount = 0
-            Clear-Host
-			Write-Host "  Watching '$RepoName' for changes every ${PollMs}ms (Ctrl+C to stop)..." -ForegroundColor DarkCyan
-			Write-Host "  --------------------------------------------------------" -ForegroundColor DarkGray
-			Write-Host "  Tracking $($lastFileList.Count) file(s) vs '$BaseBranch'" -ForegroundColor DarkGray
-			Write-Host ""
+        catch {
+            Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] warning: $_" -ForegroundColor DarkYellow
         }
     }
 }
